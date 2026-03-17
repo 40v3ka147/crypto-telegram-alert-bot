@@ -13,11 +13,42 @@
     "5m": "2026-03-17T04:46:50.245236+00:00"
   },
   "created_at": "2026-03-15T10:42:37.207928+00:00",
-  "last_run": "2026-03-17T18:06:52.204152+00:00",
+  "last_run": "2026-03-17T18:19:23.009301+00:00",
   "last_snapshot": {
-    "price": 74550.0,
-    "change_24h": 0.4914538978393914,
-    "updated_at": "2026-03-17T18:06:21+00:00"
+    "bitcoin": {
+      "coin_id": "bitcoin",
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "price": 74592.0,
+      "change_24h": 0.4489933775319224,
+      "market_cap": 1493335713435.6218,
+      "volume_24h": 53934907204.86762,
+      "updated_at": "2026-03-17T18:18:42+00:00"
+    },
+    "ethereum": {
+      "coin_id": "ethereum",
+      "symbol": "ETH",
+      "name": "Ethereum",
+      "price": 2338.91,
+      "change_24h": 0.09873633156295757,
+      "market_cap": 282657580715.9649,
+      "volume_24h": 30200549888.162987,
+      "updated_at": "2026-03-17T18:18:44+00:00"
+    }
   },
-  "last_alert_count": 0
+  "last_alert_count": 0,
+  "last_recommendations": {
+    "bitcoin": {
+      "action": "HOLD",
+      "confidence": 58.1,
+      "score": -0.03766810077163932,
+      "updated_at": "2026-03-17T18:19:23.009301+00:00"
+    },
+    "ethereum": {
+      "action": "HOLD",
+      "confidence": 55.2,
+      "score": 0.041140508485077595,
+      "updated_at": "2026-03-17T18:19:23.009301+00:00"
+    }
+  }
 }
