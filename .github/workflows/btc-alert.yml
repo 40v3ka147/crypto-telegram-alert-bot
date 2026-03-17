@@ -34,7 +34,10 @@ jobs:
           ALERT_60M_PCT: ${{ vars.ALERT_60M_PCT || '3.5' }}
           ALERT_24H_PCT: ${{ vars.ALERT_24H_PCT || '6.0' }}
           COOLDOWN_MINUTES: ${{ vars.COOLDOWN_MINUTES || '30' }}
-          SIGNAL_ALERT_CONFIDENCE: ${{ vars.SIGNAL_ALERT_CONFIDENCE || '78' }}
+          SIGNAL_ALERT_CONFIDENCE: ${{ vars.SIGNAL_ALERT_CONFIDENCE || '80' }}
+          NEWS_WATCH_CONFIDENCE: ${{ vars.NEWS_WATCH_CONFIDENCE || '68' }}
+          NEWS_IMPACT_ALERT_SCORE: ${{ vars.NEWS_IMPACT_ALERT_SCORE || '2.25' }}
+          SIGNAL_FLIP_MIN_CONFIDENCE: ${{ vars.SIGNAL_FLIP_MIN_CONFIDENCE || '72' }}
           DAILY_SUMMARY_UTC_HOUR: ${{ vars.DAILY_SUMMARY_UTC_HOUR || '7' }}
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS || 'true' }}
           TRIGGER_EVENT: ${{ github.event_name }}
