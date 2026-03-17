@@ -1,4 +1,4 @@
-name: BTC Telegram Alerts
+name: BTC + ETH Signal Bot
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  run-alert-bot:
+  run-signal-bot:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run BTC alert bot
+      - name: Run BTC + ETH signal bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -34,6 +34,9 @@ jobs:
           ALERT_60M_PCT: ${{ vars.ALERT_60M_PCT || '3.5' }}
           ALERT_24H_PCT: ${{ vars.ALERT_24H_PCT || '6.0' }}
           COOLDOWN_MINUTES: ${{ vars.COOLDOWN_MINUTES || '30' }}
+          SIGNAL_ALERT_CONFIDENCE: ${{ vars.SIGNAL_ALERT_CONFIDENCE || '78' }}
+          DAILY_SUMMARY_UTC_HOUR: ${{ vars.DAILY_SUMMARY_UTC_HOUR || '7' }}
+          ENABLE_NEWS: ${{ vars.ENABLE_NEWS || 'true' }}
           TRIGGER_EVENT: ${{ github.event_name }}
         run: python btc_alert_bot.py
 
@@ -43,7 +46,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state/btc_state.json
-            git commit -m "bot: update BTC state [skip ci]"
+            git commit -m "bot: update BTC/ETH signal state [skip ci]"
             git push
           else
             echo "No state file changes to commit."
