@@ -668,24 +668,156 @@ def record_alert(last_alerts: Dict[str, str], key: str, now: datetime) -> None:
     last_alerts[key] = dt_to_iso(now)
 
 
-def build_status_intro(analyses: List[Dict]) -> str:
-    lines = ["🤖 Bot live"]
-    for analysis in analyses:
-        lines.append(
-            f"{analysis['snapshot']['symbol']} {fmt_price(analysis['price'])} | {analysis['action']} {analysis['confidence']:.0f}%"
-        )
-    return "\n".join(lines)
+def explain_signal_reason(analysis: Dict) -> str:
+    trend_gap = analysis["trend_gap_pct"]
+    rsi14 = analysis["rsi14"]
+    news_sentiment = analysis["news"]["sentiment"]
+    vol_ratio_value = analysis["vol_ratio"]
+    pieces = []
+
+    if trend_gap >= 0.20:
+        pieces.append("краткосрочният тренд е над средния")
+    elif trend_gap <= -0.20:
+        pieces.append("краткосрочният тренд е под средния")
+    else:
+        pieces.append("трендът още не е ясно изразен")
+
+    if rsi14 >= 72:
+        pieces.append("RSI е прегрял и ограничава нов вход")
+    elif rsi14 <= 32:
+        pieces.append("RSI е нисък и пазарът изглежда препродаден")
+    elif 55 <= rsi14 < 72:
+        pieces.append("RSI подкрепя възходящо движение без крайна еуфория")
+    elif 32 < rsi14 < 45:
+        pieces.append("RSI е слаб и още няма силен импулс нагоре")
+    else:
+        pieces.append("RSI е неутрален")
+
+    if news_sentiment >= 0.18:
+        pieces.append("новините в момента накланят везните нагоре")
+    elif news_sentiment <= -0.18:
+        pieces.append("новините в момента тежат негативно")
+    else:
+        pieces.append("новините са смесени и не дават силно предимство")
+
+    if vol_ratio_value >= 1.15:
+        pieces.append("обемът е над нормалното и движението се потвърждава")
+    elif vol_ratio_value <= 0.90:
+        pieces.append("обемът е слаб и сигналът е по-малко надежден")
+    else:
+        pieces.append("обемът е около нормалното")
+
+    return "; ".join(pieces) + "."
 
 
-def build_compact_analysis(analysis: Dict) -> str:
-    symbol = analysis["snapshot"]["symbol"]
-    return (
-        f"{symbol} | {analysis['action']} | {analysis['confidence']:.0f}%\n"
-        f"Price {fmt_price(analysis['price'])} | 24h {fmt_pct(analysis['change_24h'])}\n"
-        f"Action: {analysis['short_plan']}\n"
-        f"SL {fmt_price(analysis['stop'])} | TP {fmt_price(analysis['tp1'])} / {fmt_price(analysis['tp2'])}\n"
-        f"Why: {analysis['why']}"
+def explain_horizon(analysis: Dict) -> str:
+    action = analysis["action"]
+    confidence = analysis["confidence"]
+    if action == "STRONG BUY":
+        return "12 до 72 часа, ако новините и импулсът останат положителни."
+    if action == "BUY":
+        return "6 до 24 часа. Идеята е по-скоро краткосрочна, не дългосрочна инвестиционна теза."
+    if action == "HOLD":
+        return "следващите 6 до 12 часа са решаващи, защото пазарът още не е дал чисто потвърждение."
+    if action == "SELL":
+        return "решението е краткосрочно и е за сега, докато слабостта не се обърне."
+    if confidence >= 80:
+        return "действието е за веднага, защото натискът надолу е силен."
+    return "решението е за близките часове, докато сигналът остане слаб."
+
+
+def build_detailed_analysis(analysis: Dict) -> str:
+    snap = analysis["snapshot"]
+    strongest = analysis["news"].get("strongest")
+    headlines = analysis["news"].get("headlines") or []
+    action_bg = {
+        "STRONG BUY": "СИЛЕН BUY",
+        "BUY": "BUY",
+        "HOLD": "HOLD",
+        "SELL": "SELL",
+        "STRONG SELL": "СИЛЕН SELL",
+    }.get(analysis["action"], analysis["action"])
+
+    regime_map = {
+        "bull": "възходящ режим",
+        "bear": "низходящ режим",
+        "hot": "прегрят пазар",
+        "oversold": "препродаден пазар",
+        "neutral": "неутрален / преходен пазар",
+    }
+    regime_text = regime_map.get(analysis["regime"], analysis["regime"])
+
+    if analysis["action"] in {"BUY", "STRONG BUY"}:
+        action_line = f"Добавяне: {analysis['short_plan']}"
+        sell_line = f"Продажба: не бързай; мисли за частично прибиране около {fmt_price(analysis['tp1'])} и по-агресивно около {fmt_price(analysis['tp2'])}."
+    elif analysis["action"] == "HOLD":
+        action_line = "Добавяне: не добавяй нова позиция сега; изчакай по-чист сигнал."
+        sell_line = "Продажба: не продавай панически, освен ако цената не счупи invalidation нивото."
+    else:
+        action_line = f"Действие: {analysis['short_plan']}"
+        sell_line = "Нови покупки: изчакай, докато трендът и новините не се подобрят."
+
+    headline_lines = []
+    for item in headlines[:3]:
+        headline_lines.append(f"• {item['title']} — {item['source']}")
+    if not headline_lines:
+        headline_lines.append("• Няма достатъчно силни новини в момента.")
+
+    confidence_comment = (
+        "Това е силен сигнал и си струва да му обърнеш внимание."
+        if analysis["confidence"] >= 80
+        else "Това е среден сигнал — полезен е, но не е нещо, на което да се хвърляш без мислене."
+        if analysis["confidence"] >= 65
+        else "Това е слаб до среден сигнал. Ползвай го повече като ориентир, отколкото като категорична команда."
     )
+
+    confirm_pct = round(clamp(abs(analysis["score"]) * 100, 0, 100))
+    lines = [
+        f"{snap['name']} ({snap['symbol']})",
+        "",
+        f"Сигнал: {action_bg}",
+        f"Увереност: {analysis['confidence']:.0f}%",
+        f"Текуща цена: {fmt_price(analysis['price'])}",
+        f"Пазарен режим: {regime_text}",
+        "",
+        "Какво вижда ботът:",
+        f"• 5 мин: {fmt_pct(analysis['change_5m'])}",
+        f"• 15 мин: {fmt_pct(analysis['change_15m'])}",
+        f"• 60 мин: {fmt_pct(analysis['change_60m'])}",
+        f"• 24 часа: {fmt_pct(analysis['change_24h'])}",
+        f"• RSI14: {analysis['rsi14']:.1f}",
+        f"• EMA20 спрямо EMA50: {analysis['trend_gap_pct']:+.2f}%",
+        f"• Обем спрямо нормалното: {analysis['vol_ratio']:.2f}x",
+        f"• Новинарски фон: {analysis['news']['sentiment']:+.2f} от {analysis['news']['article_count']} заглавия",
+        f"• Потвърждение от модела: {confirm_pct}%",
+        "",
+        "Защо сигналът е такъв:",
+        explain_signal_reason(analysis),
+        "",
+        f"Какво означава това на практика: {confidence_comment}",
+        f"Очакван период на валидност: {explain_horizon(analysis)}",
+        "",
+        "План:",
+        action_line,
+        f"Стоп / invalidation: {fmt_price(analysis['stop'])}",
+        f"TP1: {fmt_price(analysis['tp1'])}",
+        f"TP2: {fmt_price(analysis['tp2'])}",
+        sell_line,
+        "",
+        "Какво ще обърне сигнала:",
+        f"• Ако цената мине под {fmt_price(analysis['stop'])} при BUY/HOLD, сигналът отслабва сериозно.",
+        f"• Ако RSI продължи рязко нагоре над 72 без нов обем, рискът от охлаждане се вдига.",
+        f"• Ако новините рязко се обърнат негативно, ботът ще смъкне уверeността дори цената още да държи.",
+        "",
+        "Най-важните новини сега:",
+        *headline_lines,
+    ]
+    if strongest:
+        lines.extend([
+            "",
+            f"Най-силният news trigger: {strongest['title']} — {strongest['source']}",
+        ])
+    return "\n".join(lines)
 
 
 def build_move_alert(analysis: Dict, label: str, move_pct: float, baseline: float) -> str:
@@ -843,9 +975,27 @@ def main() -> None:
     analyses.sort(key=lambda a: (a["snapshot"]["symbol"] != "BTC", a["snapshot"]["symbol"]))
 
     if config.trigger_event == "workflow_dispatch":
-        send_telegram_message(config, build_status_intro(analyses))
         for analysis in analyses:
-            send_telegram_message(config, build_compact_analysis(analysis))
+            send_telegram_message(config, build_detailed_analysis(analysis))
+            coin_id = analysis["snapshot"]["coin_id"]
+            state.setdefault("last_recommendations", {})[coin_id] = {
+                "action": analysis["action"],
+                "confidence": analysis["confidence"],
+                "score": analysis["score"],
+                "updated_at": dt_to_iso(now),
+            }
+        state["last_run"] = dt_to_iso(now)
+        state["last_alert_count"] = 2
+        save_state(state)
+        print(json.dumps({
+            "updated_at": dt_to_iso(now),
+            "alerts_sent": 2,
+            "assets": [
+                {"symbol": a["snapshot"]["symbol"], "action": a["action"], "confidence": a["confidence"], "price": a["price"]}
+                for a in analyses
+            ],
+        }, indent=2))
+        return
 
     alerts_sent = 0
     for analysis in analyses:
