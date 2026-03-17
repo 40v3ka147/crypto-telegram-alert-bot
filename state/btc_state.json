@@ -10,45 +10,50 @@
     }
   ],
   "last_alerts": {
-    "5m": "2026-03-17T04:46:50.245236+00:00"
+    "5m": "2026-03-17T04:46:50.245236+00:00",
+    "news_watch_bitcoin_bullish": "2026-03-17T19:16:18.460010+00:00",
+    "signal_bitcoin_buy": "2026-03-17T19:16:18.460010+00:00"
   },
   "created_at": "2026-03-15T10:42:37.207928+00:00",
-  "last_run": "2026-03-17T18:19:23.009301+00:00",
+  "last_run": "2026-03-17T19:16:18.460010+00:00",
   "last_snapshot": {
     "bitcoin": {
       "coin_id": "bitcoin",
       "symbol": "BTC",
       "name": "Bitcoin",
-      "price": 74592.0,
-      "change_24h": 0.4489933775319224,
-      "market_cap": 1493335713435.6218,
-      "volume_24h": 53934907204.86762,
-      "updated_at": "2026-03-17T18:18:42+00:00"
+      "price": 74776.0,
+      "change_24h": 0.8339311230547528,
+      "market_cap": 1495984096562.0547,
+      "volume_24h": 53830132580.99189,
+      "updated_at": "2026-03-17T19:16:11+00:00"
     },
     "ethereum": {
       "coin_id": "ethereum",
       "symbol": "ETH",
       "name": "Ethereum",
-      "price": 2338.91,
-      "change_24h": 0.09873633156295757,
-      "market_cap": 282657580715.9649,
-      "volume_24h": 30200549888.162987,
-      "updated_at": "2026-03-17T18:18:44+00:00"
+      "price": 2338.3,
+      "change_24h": 0.10673121230955573,
+      "market_cap": 282200905464.59186,
+      "volume_24h": 29515600130.39409,
+      "updated_at": "2026-03-17T19:16:12+00:00"
     }
   },
-  "last_alert_count": 0,
+  "last_alert_count": 2,
   "last_recommendations": {
     "bitcoin": {
-      "action": "HOLD",
-      "confidence": 58.1,
-      "score": -0.03766810077163932,
-      "updated_at": "2026-03-17T18:19:23.009301+00:00"
+      "action": "BUY",
+      "confidence": 88.0,
+      "score": 0.40506590966284234,
+      "updated_at": "2026-03-17T19:16:18.460010+00:00"
     },
     "ethereum": {
       "action": "HOLD",
-      "confidence": 55.2,
-      "score": 0.041140508485077595,
-      "updated_at": "2026-03-17T18:19:23.009301+00:00"
+      "confidence": 50.7,
+      "score": -0.1719983634447853,
+      "updated_at": "2026-03-17T19:16:18.460010+00:00"
     }
+  },
+  "seen_news": {
+    "bitcoin:10cca566f24b6cc3": "2026-03-17T19:16:18.460010+00:00"
   }
 }
