@@ -1,114 +1,20 @@
-import hashlib
 import json
 import math
 import os
-import re
-import statistics
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import quote_plus
+from typing import Dict, List, Optional, Tuple
 
-import feedparser
 import requests
 
 STATE_PATH = Path("state/btc_state.json")
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+COINGECKO_SIMPLE_URL = "https://api.coingecko.com/api/v3/simple/price"
+COINGECKO_CHART_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
-
-ASSETS = {
-    "bitcoin": {
-        "symbol": "BTC",
-        "name": "Bitcoin",
-        "queries": [
-            "bitcoin OR btc OR spot bitcoin etf OR crypto",
-            "bitcoin OR btc OR fed OR inflation OR cpi OR sec OR etf crypto",
-        ],
-        "thresholds": {"5m": 1.0, "15m": 2.0, "60m": 3.5, "24h": 6.0},
-        "max_exposure": 8.0,
-    },
-    "ethereum": {
-        "symbol": "ETH",
-        "name": "Ethereum",
-        "queries": [
-            "ethereum OR ether OR eth OR spot ether etf OR crypto",
-            "ethereum OR eth OR fed OR inflation OR cpi OR sec OR etf crypto",
-        ],
-        "thresholds": {"5m": 1.2, "15m": 2.4, "60m": 4.0, "24h": 7.0},
-        "max_exposure": 7.0,
-    },
-}
-
-SOURCE_WEIGHTS = {
-    "Reuters": 1.30,
-    "Bloomberg": 1.25,
-    "Associated Press": 1.20,
-    "AP News": 1.20,
-    "Financial Times": 1.18,
-    "The Wall Street Journal": 1.16,
-    "CNBC": 1.12,
-    "Fortune": 1.08,
-    "CoinDesk": 1.10,
-    "The Block": 1.10,
-    "Yahoo Finance": 1.05,
-    "MarketWatch": 1.05,
-    "Decrypt": 1.03,
-    "Cointelegraph": 1.02,
-}
-
-POSITIVE_TERMS = {
-    "approved": 2.0,
-    "approval": 2.0,
-    "etf inflow": 1.9,
-    "etf inflows": 1.9,
-    "inflow": 1.0,
-    "inflows": 1.0,
-    "adoption": 1.0,
-    "strategic reserve": 2.2,
-    "treasury purchase": 2.0,
-    "buys bitcoin": 1.6,
-    "buys ethereum": 1.6,
-    "partnership": 0.7,
-    "upgrade": 0.7,
-    "surge": 0.8,
-    "rally": 0.8,
-    "record high": 1.2,
-    "bullish": 1.1,
-    "rate cut": 1.1,
-    "rate cuts": 1.1,
-    "cooling inflation": 1.2,
-    "softer inflation": 1.2,
-}
-
-NEGATIVE_TERMS = {
-    "rejected": 2.0,
-    "rejection": 2.0,
-    "delay": 0.9,
-    "delays": 0.9,
-    "hack": 2.6,
-    "hacked": 2.6,
-    "exploit": 2.5,
-    "security breach": 2.5,
-    "bankruptcy": 2.6,
-    "fraud": 2.0,
-    "lawsuit": 1.7,
-    "investigation": 1.5,
-    "ban": 1.8,
-    "bans": 1.8,
-    "outflow": 1.2,
-    "outflows": 1.2,
-    "liquidation": 1.6,
-    "liquidations": 1.6,
-    "selloff": 1.3,
-    "crash": 1.6,
-    "plunge": 1.5,
-    "bearish": 1.1,
-    "rate hike": 1.4,
-    "rate hikes": 1.4,
-    "hot inflation": 1.5,
-    "sticky inflation": 1.4,
+COINS = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
 }
 
 
@@ -117,75 +23,14 @@ class BotError(Exception):
 
 
 @dataclass
-class Destination:
-    chat_id: str
-    message_thread_id: Optional[int] = None
-
-
-@dataclass
 class Config:
     telegram_bot_token: str
-    telegram_destinations: List[Destination]
+    telegram_chat_ids: List[str]
     coingecko_api_key: str
-    trigger_event: str
     cooldown_minutes: int
-    signal_alert_confidence: int
-    signal_flip_min_confidence: int
-    news_watch_confidence: int
-    news_impact_alert_score: float
-    daily_summary_utc_hour: int
-    enable_news: bool
-
-
-def parse_destinations(raw: str) -> List[Destination]:
-    destinations: List[Destination] = []
-    for item in re.split(r"[,\n]", raw):
-        token = item.strip()
-        if not token:
-            continue
-        if ":" in token:
-            chat_id, maybe_thread = token.rsplit(":", 1)
-            if maybe_thread.isdigit():
-                destinations.append(Destination(chat_id=chat_id.strip(), message_thread_id=int(maybe_thread)))
-                continue
-        destinations.append(Destination(chat_id=token))
-    return destinations
-
-
-def load_config() -> Config:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    raw_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    api_key = os.getenv("COINGECKO_API_KEY", "").strip()
-
-    missing = [
-        name
-        for name, value in [
-            ("TELEGRAM_BOT_TOKEN", token),
-            ("TELEGRAM_CHAT_ID", raw_chat_id),
-            ("COINGECKO_API_KEY", api_key),
-        ]
-        if not value
-    ]
-    if missing:
-        raise BotError(f"Missing required environment variables: {', '.join(missing)}")
-
-    destinations = parse_destinations(raw_chat_id)
-    if not destinations:
-        raise BotError("TELEGRAM_CHAT_ID must contain at least one destination")
-
-    return Config(
-        telegram_bot_token=token,
-        telegram_destinations=destinations,
-        coingecko_api_key=api_key,
-        trigger_event=os.getenv("TRIGGER_EVENT", "schedule").strip(),
-        cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "30")),
-        signal_alert_confidence=int(os.getenv("SIGNAL_ALERT_CONFIDENCE", "80")),
-        signal_flip_min_confidence=int(os.getenv("SIGNAL_FLIP_MIN_CONFIDENCE", "72")),
-        news_watch_confidence=int(os.getenv("NEWS_WATCH_CONFIDENCE", "68")),
-        news_impact_alert_score=float(os.getenv("NEWS_IMPACT_ALERT_SCORE", "2.25")),
-        daily_summary_utc_hour=int(os.getenv("DAILY_SUMMARY_UTC_HOUR", "7")),
-        enable_news=os.getenv("ENABLE_NEWS", "true").strip().lower() != "false",
-    )
+    summary_interval_hours: int
+    strong_confidence: int
+    trigger_event: str
 
 
 def utc_now() -> datetime:
@@ -200,33 +45,31 @@ def iso_to_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+def load_config() -> Config:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id_raw = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    api_key = os.getenv("COINGECKO_API_KEY", "").strip()
+    if not token or not chat_id_raw or not api_key:
+        raise BotError("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or COINGECKO_API_KEY")
 
+    chat_ids = [item.strip() for item in chat_id_raw.split(",") if item.strip()]
+    if not chat_ids:
+        raise BotError("No valid TELEGRAM_CHAT_ID found")
 
-def fmt_price(price: float) -> str:
-    return f"${price:,.2f}"
-
-
-def fmt_pct(value: float) -> str:
-    return f"{value:+.2f}%"
-
-
-def normalize_title(value: str) -> str:
-    value = re.sub(r"\s+", " ", (value or "").strip().lower())
-    value = re.sub(r"[^a-z0-9 ]+", "", value)
-    return value
+    return Config(
+        telegram_bot_token=token,
+        telegram_chat_ids=chat_ids,
+        coingecko_api_key=api_key,
+        cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "30")),
+        summary_interval_hours=int(os.getenv("SUMMARY_INTERVAL_HOURS", "4")),
+        strong_confidence=int(os.getenv("STRONG_SIGNAL_CONFIDENCE", "74")),
+        trigger_event=os.getenv("TRIGGER_EVENT", "schedule").strip(),
+    )
 
 
 def load_state() -> Dict:
     if not STATE_PATH.exists():
-        return {
-            "created_at": dt_to_iso(utc_now()),
-            "last_alerts": {},
-            "last_recommendations": {},
-            "seen_headlines": {},
-            "daily_summary_sent": {},
-        }
+        return {"signals": {}, "last_alerts": {}, "created_at": dt_to_iso(utc_now())}
     with STATE_PATH.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -240,15 +83,13 @@ def save_state(state: Dict) -> None:
 
 def send_telegram_message(config: Config, text: str) -> None:
     url = TELEGRAM_URL.format(token=config.telegram_bot_token)
-    for dest in config.telegram_destinations:
-        data = {
-            "chat_id": dest.chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        }
-        if dest.message_thread_id is not None:
-            data["message_thread_id"] = str(dest.message_thread_id)
-        response = requests.post(url, data=data, timeout=30)
+    for chat_id in config.telegram_chat_ids:
+        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"}
+        if ":" in chat_id:
+            base_id, thread_id = chat_id.split(":", 1)
+            payload["chat_id"] = base_id
+            payload["message_thread_id"] = thread_id
+        response = requests.post(url, data=payload, timeout=30)
         response.raise_for_status()
 
 
@@ -256,773 +97,353 @@ def cg_headers(config: Config) -> Dict[str, str]:
     return {"x-cg-demo-api-key": config.coingecko_api_key}
 
 
-def get_market_snapshot(config: Config) -> Dict[str, Dict]:
-    response = requests.get(
-        f"{COINGECKO_BASE}/simple/price",
-        params={
-            "ids": "bitcoin,ethereum",
-            "vs_currencies": "usd",
-            "include_24hr_change": "true",
-            "include_24hr_vol": "true",
-            "include_market_cap": "true",
-        },
-        headers=cg_headers(config),
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    snapshots = {}
-    for coin_id, meta in ASSETS.items():
-        coin = data.get(coin_id)
-        if not coin or "usd" not in coin:
-            raise BotError(f"Unexpected CoinGecko payload for {coin_id}: {data}")
-        snapshots[coin_id] = {
-            "coin_id": coin_id,
-            "symbol": meta["symbol"],
-            "name": meta["name"],
-            "price": float(coin["usd"]),
-            "change_24h": float(coin.get("usd_24h_change") or 0.0),
-            "market_cap": float(coin.get("usd_market_cap") or 0.0),
-            "volume_24h": float(coin.get("usd_24h_vol") or 0.0),
-        }
-    return snapshots
-
-
-def get_market_chart(config: Config, coin_id: str) -> Dict:
-    response = requests.get(
-        f"{COINGECKO_BASE}/coins/{coin_id}/market_chart",
-        params={"vs_currency": "usd", "days": "1"},
-        headers=cg_headers(config),
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return {
-        "prices": data.get("prices") or [],
-        "volumes": data.get("total_volumes") or [],
+def fetch_simple_prices(config: Config) -> Dict[str, Dict]:
+    params = {
+        "ids": ",".join(COINS.keys()),
+        "vs_currencies": "usd",
+        "include_24hr_change": "true",
+        "include_last_updated_at": "true",
     }
+    response = requests.get(COINGECKO_SIMPLE_URL, params=params, headers=cg_headers(config), timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
-def series_values(points: List[List[float]]) -> List[float]:
-    return [float(p[1]) for p in points]
+def fetch_market_chart(config: Config, coin_id: str) -> List[Tuple[datetime, float]]:
+    params = {"vs_currency": "usd", "days": "1"}
+    response = requests.get(COINGECKO_CHART_URL.format(coin_id=coin_id), params=params, headers=cg_headers(config), timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    prices = data.get("prices", [])
+    if not prices:
+        raise BotError(f"No chart data for {coin_id}")
+    return [
+        (datetime.fromtimestamp(ts / 1000, tz=timezone.utc), float(price))
+        for ts, price in prices
+    ]
 
 
-def average(values: List[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+def nearest_price(points: List[Tuple[datetime, float]], target: datetime) -> Optional[float]:
+    candidates = [(abs((ts - target).total_seconds()), price) for ts, price in points]
+    if not candidates:
+        return None
+    seconds, price = min(candidates, key=lambda item: item[0])
+    return price if seconds <= 30 * 60 else None
 
 
-def ema(values: List[float], period: int) -> float:
-    if not values:
+def pct_change(current: float, baseline: Optional[float]) -> float:
+    if not baseline:
         return 0.0
-    alpha = 2 / (period + 1)
-    result = values[0]
-    for value in values[1:]:
-        result = alpha * value + (1 - alpha) * result
-    return result
+    return ((current - baseline) / baseline) * 100
 
 
-def rsi(values: List[float], period: int = 14) -> float:
+def ema(values: List[float], period: int) -> Optional[float]:
+    if len(values) < period:
+        return None
+    multiplier = 2 / (period + 1)
+    value = sum(values[:period]) / period
+    for item in values[period:]:
+        value = (item - value) * multiplier + value
+    return value
+
+
+def rsi(values: List[float], period: int = 14) -> Optional[float]:
     if len(values) < period + 1:
-        return 50.0
+        return None
     gains = []
     losses = []
-    recent = values[-(period + 1):]
-    for prev, curr in zip(recent[:-1], recent[1:]):
-        diff = curr - prev
-        gains.append(max(diff, 0.0))
-        losses.append(max(-diff, 0.0))
+    for i in range(1, period + 1):
+        delta = values[i] - values[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
+    for i in range(period + 1, len(values)):
+        delta = values[i] - values[i - 1]
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+        avg_gain = ((avg_gain * (period - 1)) + gain) / period
+        avg_loss = ((avg_loss * (period - 1)) + loss) / period
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-def macd(values: List[float]) -> float:
-    if len(values) < 35:
-        return 0.0
-    ema12 = ema(values[-120:], 12)
-    ema26 = ema(values[-120:], 26)
-    return ema12 - ema26
+def market_regime(change_4h: float, ema_gap_pct: float, rsi_value: float) -> str:
+    if change_4h > 1.5 and ema_gap_pct > 0.25 and rsi_value < 72:
+        return "bullish"
+    if change_4h < -1.5 and ema_gap_pct < -0.25 and rsi_value > 28:
+        return "bearish"
+    return "mixed"
 
 
-def find_price_at_or_before(prices: List[List[float]], target_dt: datetime) -> Optional[float]:
-    target_ms = target_dt.timestamp() * 1000
-    baseline = None
-    for ts_ms, price in prices:
-        if ts_ms <= target_ms:
-            baseline = float(price)
-        else:
-            break
-    return baseline
+def build_signal(coin_id: str, symbol: str, current_price: float, change_24h: float, points: List[Tuple[datetime, float]]) -> Dict:
+    now = points[-1][0]
+    series = [price for _, price in points]
+    p15 = nearest_price(points, now - timedelta(minutes=15))
+    p60 = nearest_price(points, now - timedelta(hours=1))
+    p240 = nearest_price(points, now - timedelta(hours=4))
 
+    ch15 = pct_change(current_price, p15)
+    ch60 = pct_change(current_price, p60)
+    ch240 = pct_change(current_price, p240)
 
-def pct_change(current: float, previous: Optional[float]) -> float:
-    if not previous:
-        return 0.0
-    return ((current - previous) / previous) * 100
+    ema20 = ema(series, 20)
+    ema50 = ema(series, 50)
+    ema_gap_pct = 0.0
+    if ema20 and ema50 and ema50 != 0:
+        ema_gap_pct = ((ema20 - ema50) / ema50) * 100
+    rsi_value = rsi(series[-80:]) or 50.0
 
+    day_high = max(series)
+    day_low = min(series)
+    drop_from_high = pct_change(current_price, day_high)
+    bounce_from_low = pct_change(current_price, day_low)
 
-def sign(value: float, deadzone: float = 0.05) -> int:
-    if value > deadzone:
-        return 1
-    if value < -deadzone:
-        return -1
-    return 0
+    score = 0
+    reasons: List[str] = []
+    risks: List[str] = []
 
+    if ch15 > 0.35:
+        score += 1
+        reasons.append("15m momentum is positive")
+    elif ch15 < -0.35:
+        score -= 1
+        risks.append("15m momentum is negative")
 
-def source_from_title(title: str) -> str:
-    parts = [x.strip() for x in (title or "").rsplit(" - ", 1)]
-    return parts[1] if len(parts) == 2 else "Unknown"
+    if ch60 > 0.8:
+        score += 2
+        reasons.append("1h trend is pushing up")
+    elif ch60 < -0.8:
+        score -= 2
+        risks.append("1h trend is pushing down")
 
+    if ch240 > 1.8:
+        score += 2
+        reasons.append("4h structure is bullish")
+    elif ch240 < -1.8:
+        score -= 2
+        risks.append("4h structure is bearish")
 
-def title_without_source(title: str) -> str:
-    parts = [x.strip() for x in (title or "").rsplit(" - ", 1)]
-    return parts[0] if parts else title
+    if ema_gap_pct > 0.18:
+        score += 1
+        reasons.append("EMA20 is above EMA50")
+    elif ema_gap_pct < -0.18:
+        score -= 1
+        risks.append("EMA20 is below EMA50")
 
+    if 45 <= rsi_value <= 65 and score > 0:
+        score += 1
+        reasons.append("RSI supports upside without overheating")
+    elif 35 <= rsi_value <= 55 and score < 0:
+        score -= 1
+        risks.append("RSI is not oversold enough to trust a bounce")
+    elif rsi_value > 72:
+        score -= 1
+        risks.append("RSI looks overheated")
+    elif rsi_value < 30:
+        score += 1
+        reasons.append("RSI is deeply oversold and bounce risk is rising")
 
-def google_news_rss_url(asset_query: str) -> str:
-    q = quote_plus(f"{asset_query} when:24h")
-    return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+    if change_24h > 2.0:
+        score += 1
+        reasons.append("24h trend is positive")
+    elif change_24h < -2.0:
+        score -= 1
+        risks.append("24h trend is negative")
 
+    if drop_from_high <= -2.5:
+        score -= 1
+        risks.append("price is well below the day high")
+    if bounce_from_low >= 1.8:
+        score += 1
+        reasons.append("price has bounced well from the day low")
 
-def entry_time(entry) -> datetime:
-    if getattr(entry, "published_parsed", None):
-        return datetime.fromtimestamp(time.mktime(entry.published_parsed), tz=timezone.utc)
-    if getattr(entry, "updated_parsed", None):
-        return datetime.fromtimestamp(time.mktime(entry.updated_parsed), tz=timezone.utc)
-    return utc_now()
-
-
-def relevance_for_asset(coin_id: str, text: str) -> float:
-    lower = text.lower()
-    if coin_id == "bitcoin" and any(t in lower for t in ["bitcoin", "btc", "spot bitcoin etf"]):
-        return 1.0
-    if coin_id == "ethereum" and any(t in lower for t in ["ethereum", "ether", "eth", "spot ether etf"]):
-        return 1.0
-    if any(t in lower for t in ["fed", "federal reserve", "cpi", "inflation", "rates", "risk assets"]):
-        return 0.65
-    if "crypto" in lower:
-        return 0.75
-    return 0.45
-
-
-def score_headline(coin_id: str, text: str, source: str) -> Dict:
-    lower = text.lower()
-    raw = 0.0
-    tags = []
-    for term, weight in POSITIVE_TERMS.items():
-        if term in lower:
-            raw += weight
-            tags.append(term)
-    for term, weight in NEGATIVE_TERMS.items():
-        if term in lower:
-            raw -= weight
-            tags.append(term)
-    if coin_id == "bitcoin" and "bitcoin etf" in lower:
-        raw *= 1.10
-    if coin_id == "ethereum" and any(t in lower for t in ["ether etf", "ethereum etf"]):
-        raw *= 1.10
-    return {
-        "raw_score": raw,
-        "source_weight": SOURCE_WEIGHTS.get(source, 1.0),
-        "relevance": relevance_for_asset(coin_id, lower),
-        "direction": 1 if raw > 0 else -1 if raw < 0 else 0,
-        "tags": tags[:3],
-    }
-
-
-def headline_id(coin_id: str, title: str) -> str:
-    return f"{coin_id}:{hashlib.sha1(normalize_title(title).encode('utf-8')).hexdigest()[:16]}"
-
-
-def get_asset_news(coin_id: str) -> Dict:
-    now = utc_now()
-    seen = set()
-    articles = []
-    for query in ASSETS[coin_id]["queries"]:
-        feed = feedparser.parse(google_news_rss_url(query))
-        for entry in feed.entries[:10]:
-            title = getattr(entry, "title", "") or ""
-            clean_title = title_without_source(title)
-            norm = normalize_title(clean_title)
-            if not norm or norm in seen:
-                continue
-            seen.add(norm)
-            source = source_from_title(title)
-            summary = re.sub(r"<[^>]+>", " ", getattr(entry, "summary", "") or "")
-            combined = f"{clean_title} {summary}".strip()
-            scoring = score_headline(coin_id, combined, source)
-            published = entry_time(entry)
-            age_hours = max((now - published).total_seconds() / 3600, 0.0)
-            recency = 1.15 if age_hours <= 2 else 1.0 if age_hours <= 6 else 0.8 if age_hours <= 12 else 0.6
-            weighted = scoring["raw_score"] * scoring["source_weight"] * scoring["relevance"] * recency
-            articles.append(
-                {
-                    "id": headline_id(coin_id, clean_title),
-                    "title": clean_title[:160],
-                    "source": source,
-                    "published_at": dt_to_iso(published),
-                    "weighted_score": round(weighted, 2),
-                    "direction": scoring["direction"],
-                    "tags": scoring["tags"],
-                }
-            )
-    articles.sort(key=lambda x: abs(x["weighted_score"]), reverse=True)
-    top = articles[:12]
-    sentiment = clamp(average([a["weighted_score"] for a in top]) / 3.0, -1.0, 1.0)
-    strongest = top[0] if top else None
-    return {
-        "article_count": len(top),
-        "sentiment": sentiment,
-        "strongest": strongest,
-        "headlines": top[:3],
-    }
-
-
-def volume_ratio(volumes: List[List[float]]) -> float:
-    vals = series_values(volumes)
-    if len(vals) < 18:
-        return 1.0
-    recent = average(vals[-6:])
-    baseline = statistics.median(vals[-24:-6]) if len(vals) >= 24 else statistics.median(vals[:-6])
-    if baseline <= 0:
-        return 1.0
-    return recent / baseline
-
-
-def regime_label(trend_gap_pct: float, rsi14: float) -> str:
-    if trend_gap_pct > 0.35 and rsi14 < 72:
-        return "bull"
-    if trend_gap_pct < -0.35 and rsi14 > 28:
-        return "bear"
-    if rsi14 >= 72:
-        return "hot"
-    if rsi14 <= 30:
-        return "oversold"
-    return "neutral"
-
-
-def compute_analysis(snapshot: Dict, chart: Dict, news: Dict) -> Dict:
-    prices = chart["prices"]
-    if not prices:
-        raise BotError(f"Missing chart prices for {snapshot['coin_id']}")
-    values = series_values(prices)
-    current = snapshot["price"]
-    now = utc_now()
-
-    p5 = find_price_at_or_before(prices, now - timedelta(minutes=5))
-    p15 = find_price_at_or_before(prices, now - timedelta(minutes=15))
-    p60 = find_price_at_or_before(prices, now - timedelta(minutes=60))
-
-    change_5m = pct_change(current, p5)
-    change_15m = pct_change(current, p15)
-    change_60m = pct_change(current, p60)
-    change_24h = snapshot["change_24h"]
-
-    ema20 = ema(values[-80:], 20)
-    ema50 = ema(values[-120:], 50)
-    trend_gap_pct = ((ema20 - ema50) / ema50) * 100 if ema50 else 0.0
-    rsi14 = rsi(values, 14)
-    macd_value = macd(values)
-    macd_pct = (macd_value / current) * 100 if current else 0.0
-    vol_ratio = volume_ratio(chart.get("volumes") or [])
-
-    trend_score = clamp(trend_gap_pct / 0.8, -1.0, 1.0) * 0.30
-    momentum_score = (
-        clamp(change_5m / 1.5, -1.0, 1.0) * 0.08
-        + clamp(change_15m / 2.2, -1.0, 1.0) * 0.16
-        + clamp(change_60m / 4.2, -1.0, 1.0) * 0.16
-        + clamp(change_24h / 8.5, -1.0, 1.0) * 0.08
-    )
-    if rsi14 < 30:
-        rsi_score = 0.16
-    elif rsi14 < 38:
-        rsi_score = 0.08
-    elif rsi14 > 76:
-        rsi_score = -0.18
-    elif rsi14 > 68:
-        rsi_score = -0.09
+    if score >= 5:
+        signal = "BUY"
+        confidence = min(88, 56 + score * 5)
+        hold_window = "next 6 to 24 hours"
+        action = "Look for an entry on small pullbacks, not on panic candles."
+    elif score <= -5:
+        signal = "SELL"
+        confidence = min(88, 56 + abs(score) * 5)
+        hold_window = "next 6 to 24 hours"
+        action = "Avoid new buys and consider reducing exposure on weak bounces."
     else:
-        rsi_score = 0.0
+        signal = "HOLD"
+        confidence = 52 + min(16, abs(score) * 3)
+        hold_window = "next 2 to 8 hours"
+        action = "Wait for a cleaner move before taking a new trade."
 
-    volume_score = 0.0
-    if vol_ratio > 1.15:
-        volume_score = clamp((vol_ratio - 1.0) / 0.8, 0.0, 1.0) * (0.10 if (change_15m + change_60m) > 0 else -0.10)
-
-    news_sentiment_score = news["sentiment"] * 0.18
-    strongest = news.get("strongest") or {"weighted_score": 0.0}
-    news_impulse_score = clamp((strongest["weighted_score"] if strongest else 0.0) / 3.0, -1.0, 1.0) * 0.14
-    news_score = news_sentiment_score + news_impulse_score
-
-    total_score = clamp(trend_score + momentum_score + rsi_score + clamp(macd_pct / 0.1, -1.0, 1.0) * 0.10 + volume_score + news_score, -1.0, 1.0)
-
-    if total_score >= 0.56:
-        action = "STRONG BUY"
-    elif total_score >= 0.22:
-        action = "BUY"
-    elif total_score <= -0.56:
-        action = "STRONG SELL"
-    elif total_score <= -0.22:
-        action = "SELL"
-    else:
-        action = "HOLD"
-
-    agreement_bits = [sign(x, 0.03) for x in [trend_score, momentum_score, rsi_score, news_score] if sign(x, 0.03) != 0]
-    agreement = abs(sum(agreement_bits)) / len(agreement_bits) if agreement_bits else 0.0
-    confidence = clamp(
-        40 + abs(total_score) * 32 + agreement * 14 + max(vol_ratio - 1.0, 0.0) * 8,
-        30,
-        95,
-    )
-
-    stop_distance_pct = 1.3 if snapshot["coin_id"] == "bitcoin" else 1.8
-    stop_distance_pct = max(stop_distance_pct, min(abs(change_60m) * 1.8, 5.0))
-
-    max_exposure = ASSETS[snapshot["coin_id"]]["max_exposure"]
-    if action == "STRONG BUY":
-        add_pct = round(clamp((confidence - 60) / 4.5, 2.0, 5.0), 1)
-        hold_window = "12-72ч"
-        stop = current * (1 - stop_distance_pct / 100)
-        tp1 = current * (1 + stop_distance_pct * 1.4 / 100)
-        tp2 = current * (1 + stop_distance_pct * 2.8 / 100)
-        short_plan = f"Buy {add_pct:.1f}% | max {max_exposure:.1f}%"
-    elif action == "BUY":
-        add_pct = round(clamp((confidence - 52) / 7.0, 1.0, 3.5), 1)
-        hold_window = "6-24ч"
-        stop = current * (1 - stop_distance_pct / 100)
-        tp1 = current * (1 + stop_distance_pct * 1.2 / 100)
-        tp2 = current * (1 + stop_distance_pct * 2.2 / 100)
-        short_plan = f"Buy {add_pct:.1f}% | max {max_exposure - 1.5:.1f}%"
-    elif action == "HOLD":
-        hold_window = "изчакай"
-        stop = current * (1 - stop_distance_pct / 100)
-        tp1 = current * (1 + stop_distance_pct / 100)
-        tp2 = current * (1 + stop_distance_pct * 2 / 100)
-        short_plan = f"No new buy | max {max_exposure - 2.0:.1f}%"
-    elif action == "SELL":
-        trim_pct = round(clamp((confidence - 48) / 5.5, 20.0, 50.0), 0)
-        hold_window = "сега"
-        stop = current * (1 + stop_distance_pct / 100)
-        tp1 = current * (1 - stop_distance_pct * 1.1 / 100)
-        tp2 = current * (1 - stop_distance_pct * 2.0 / 100)
-        short_plan = f"Trim {trim_pct:.0f}%"
-    else:
-        trim_pct = round(clamp((confidence - 56) / 3.5, 35.0, 75.0), 0)
-        hold_window = "сега"
-        stop = current * (1 + stop_distance_pct / 100)
-        tp1 = current * (1 - stop_distance_pct * 1.4 / 100)
-        tp2 = current * (1 - stop_distance_pct * 2.6 / 100)
-        short_plan = f"Trim {trim_pct:.0f}%"
-
-    why_parts = []
-    if trend_gap_pct > 0.15:
-        why_parts.append("trend up")
-    elif trend_gap_pct < -0.15:
-        why_parts.append("trend down")
-    if rsi14 >= 72:
-        why_parts.append("overheated")
-    elif rsi14 <= 30:
-        why_parts.append("oversold")
-    if strongest and abs(strongest.get("weighted_score", 0.0)) >= 2.0:
-        why_parts.append("big news")
-    if vol_ratio > 1.2:
-        why_parts.append("high volume")
-    if not why_parts:
-        why_parts.append("mixed setup")
+    stop = current_price * (0.987 if signal == "BUY" else 1.013 if signal == "SELL" else 0.985)
+    tp1 = current_price * (1.015 if signal == "BUY" else 0.985 if signal == "SELL" else 1.01)
+    tp2 = current_price * (1.028 if signal == "BUY" else 0.972 if signal == "SELL" else 1.018)
 
     return {
-        "snapshot": snapshot,
-        "action": action,
-        "confidence": round(confidence),
-        "price": current,
-        "change_5m": change_5m,
-        "change_15m": change_15m,
-        "change_60m": change_60m,
+        "coin_id": coin_id,
+        "symbol": symbol,
+        "signal": signal,
+        "confidence": int(round(confidence)),
+        "current_price": current_price,
+        "change_15m": ch15,
+        "change_60m": ch60,
+        "change_4h": ch240,
         "change_24h": change_24h,
-        "rsi14": rsi14,
-        "trend_gap_pct": trend_gap_pct,
-        "vol_ratio": vol_ratio,
-        "news": news,
-        "score": total_score,
-        "regime": regime_label(trend_gap_pct, rsi14),
+        "ema_gap_pct": ema_gap_pct,
+        "rsi": rsi_value,
+        "regime": market_regime(ch240, ema_gap_pct, rsi_value),
+        "day_high": day_high,
+        "day_low": day_low,
         "hold_window": hold_window,
-        "short_plan": short_plan,
+        "action": action,
         "stop": stop,
         "tp1": tp1,
         "tp2": tp2,
-        "why": ", ".join(why_parts[:3]),
+        "reasons": reasons[:4],
+        "risks": risks[:4],
+        "score": score,
     }
 
 
-def can_send(last_alerts: Dict[str, str], key: str, now: datetime, cooldown_minutes: int) -> bool:
-    last = last_alerts.get(key)
-    if not last:
+def format_price(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def format_pct(value: float) -> str:
+    return f"{value:+.2f}%"
+
+
+def build_prediction_message(signal: Dict) -> str:
+    reasons = signal["reasons"] or ["No strong bullish confirmation yet"]
+    risks = signal["risks"] or ["No major technical warning is standing out"]
+    return "\n".join([
+        f"{signal['symbol']} prediction",
+        f"Signal: {signal['signal']} ({signal['confidence']}%)",
+        f"Price: {format_price(signal['current_price'])}",
+        f"Window: {signal['hold_window']}",
+        f"Regime: {signal['regime']}",
+        "",
+        "Why it thinks this:",
+        f"- 15m: {format_pct(signal['change_15m'])}",
+        f"- 1h: {format_pct(signal['change_60m'])}",
+        f"- 4h: {format_pct(signal['change_4h'])}",
+        f"- 24h: {format_pct(signal['change_24h'])}",
+        f"- RSI14: {signal['rsi']:.1f}",
+        f"- EMA20 vs EMA50: {format_pct(signal['ema_gap_pct'])}",
+        f"- Day high / low: {format_price(signal['day_high'])} / {format_price(signal['day_low'])}",
+        "",
+        "Bullish factors:",
+        *[f"- {item}" for item in reasons],
+        "",
+        "Risk factors:",
+        *[f"- {item}" for item in risks],
+        "",
+        "What to do:",
+        f"- {signal['action']}",
+        f"- Stop / invalidation: {format_price(signal['stop'])}",
+        f"- TP1 / TP2: {format_price(signal['tp1'])} / {format_price(signal['tp2'])}",
+        "",
+        "When the signal changes:",
+        "- It turns stronger if momentum and EMA gap keep improving.",
+        "- It weakens if price loses momentum or breaks the invalidation level.",
+    ])
+
+
+def should_send_summary(state: Dict, symbol: str, now: datetime, config: Config, signal: Dict) -> bool:
+    if config.trigger_event == "workflow_dispatch":
         return True
-    return now - iso_to_dt(last) >= timedelta(minutes=cooldown_minutes)
-
-
-def record_alert(last_alerts: Dict[str, str], key: str, now: datetime) -> None:
-    last_alerts[key] = dt_to_iso(now)
-
-
-def explain_signal_reason(analysis: Dict) -> str:
-    trend_gap = analysis["trend_gap_pct"]
-    rsi14 = analysis["rsi14"]
-    news_sentiment = analysis["news"]["sentiment"]
-    vol_ratio_value = analysis["vol_ratio"]
-    pieces = []
-
-    if trend_gap >= 0.20:
-        pieces.append("краткосрочният тренд е над средния")
-    elif trend_gap <= -0.20:
-        pieces.append("краткосрочният тренд е под средния")
-    else:
-        pieces.append("трендът още не е ясно изразен")
-
-    if rsi14 >= 72:
-        pieces.append("RSI е прегрял и ограничава нов вход")
-    elif rsi14 <= 32:
-        pieces.append("RSI е нисък и пазарът изглежда препродаден")
-    elif 55 <= rsi14 < 72:
-        pieces.append("RSI подкрепя възходящо движение без крайна еуфория")
-    elif 32 < rsi14 < 45:
-        pieces.append("RSI е слаб и още няма силен импулс нагоре")
-    else:
-        pieces.append("RSI е неутрален")
-
-    if news_sentiment >= 0.18:
-        pieces.append("новините в момента накланят везните нагоре")
-    elif news_sentiment <= -0.18:
-        pieces.append("новините в момента тежат негативно")
-    else:
-        pieces.append("новините са смесени и не дават силно предимство")
-
-    if vol_ratio_value >= 1.15:
-        pieces.append("обемът е над нормалното и движението се потвърждава")
-    elif vol_ratio_value <= 0.90:
-        pieces.append("обемът е слаб и сигналът е по-малко надежден")
-    else:
-        pieces.append("обемът е около нормалното")
-
-    return "; ".join(pieces) + "."
-
-
-def explain_horizon(analysis: Dict) -> str:
-    action = analysis["action"]
-    confidence = analysis["confidence"]
-    if action == "STRONG BUY":
-        return "12 до 72 часа, ако новините и импулсът останат положителни."
-    if action == "BUY":
-        return "6 до 24 часа. Идеята е по-скоро краткосрочна, не дългосрочна инвестиционна теза."
-    if action == "HOLD":
-        return "следващите 6 до 12 часа са решаващи, защото пазарът още не е дал чисто потвърждение."
-    if action == "SELL":
-        return "решението е краткосрочно и е за сега, докато слабостта не се обърне."
-    if confidence >= 80:
-        return "действието е за веднага, защото натискът надолу е силен."
-    return "решението е за близките часове, докато сигналът остане слаб."
-
-
-def build_detailed_analysis(analysis: Dict) -> str:
-    snap = analysis["snapshot"]
-    strongest = analysis["news"].get("strongest")
-    headlines = analysis["news"].get("headlines") or []
-    action_bg = {
-        "STRONG BUY": "СИЛЕН BUY",
-        "BUY": "BUY",
-        "HOLD": "HOLD",
-        "SELL": "SELL",
-        "STRONG SELL": "СИЛЕН SELL",
-    }.get(analysis["action"], analysis["action"])
-
-    regime_map = {
-        "bull": "възходящ режим",
-        "bear": "низходящ режим",
-        "hot": "прегрят пазар",
-        "oversold": "препродаден пазар",
-        "neutral": "неутрален / преходен пазар",
-    }
-    regime_text = regime_map.get(analysis["regime"], analysis["regime"])
-
-    if analysis["action"] in {"BUY", "STRONG BUY"}:
-        action_line = f"Добавяне: {analysis['short_plan']}"
-        sell_line = f"Продажба: не бързай; мисли за частично прибиране около {fmt_price(analysis['tp1'])} и по-агресивно около {fmt_price(analysis['tp2'])}."
-    elif analysis["action"] == "HOLD":
-        action_line = "Добавяне: не добавяй нова позиция сега; изчакай по-чист сигнал."
-        sell_line = "Продажба: не продавай панически, освен ако цената не счупи invalidation нивото."
-    else:
-        action_line = f"Действие: {analysis['short_plan']}"
-        sell_line = "Нови покупки: изчакай, докато трендът и новините не се подобрят."
-
-    headline_lines = []
-    for item in headlines[:3]:
-        headline_lines.append(f"• {item['title']} — {item['source']}")
-    if not headline_lines:
-        headline_lines.append("• Няма достатъчно силни новини в момента.")
-
-    confidence_comment = (
-        "Това е силен сигнал и си струва да му обърнеш внимание."
-        if analysis["confidence"] >= 80
-        else "Това е среден сигнал — полезен е, но не е нещо, на което да се хвърляш без мислене."
-        if analysis["confidence"] >= 65
-        else "Това е слаб до среден сигнал. Ползвай го повече като ориентир, отколкото като категорична команда."
-    )
-
-    confirm_pct = round(clamp(abs(analysis["score"]) * 100, 0, 100))
-    lines = [
-        f"{snap['name']} ({snap['symbol']})",
-        "",
-        f"Сигнал: {action_bg}",
-        f"Увереност: {analysis['confidence']:.0f}%",
-        f"Текуща цена: {fmt_price(analysis['price'])}",
-        f"Пазарен режим: {regime_text}",
-        "",
-        "Какво вижда ботът:",
-        f"• 5 мин: {fmt_pct(analysis['change_5m'])}",
-        f"• 15 мин: {fmt_pct(analysis['change_15m'])}",
-        f"• 60 мин: {fmt_pct(analysis['change_60m'])}",
-        f"• 24 часа: {fmt_pct(analysis['change_24h'])}",
-        f"• RSI14: {analysis['rsi14']:.1f}",
-        f"• EMA20 спрямо EMA50: {analysis['trend_gap_pct']:+.2f}%",
-        f"• Обем спрямо нормалното: {analysis['vol_ratio']:.2f}x",
-        f"• Новинарски фон: {analysis['news']['sentiment']:+.2f} от {analysis['news']['article_count']} заглавия",
-        f"• Потвърждение от модела: {confirm_pct}%",
-        "",
-        "Защо сигналът е такъв:",
-        explain_signal_reason(analysis),
-        "",
-        f"Какво означава това на практика: {confidence_comment}",
-        f"Очакван период на валидност: {explain_horizon(analysis)}",
-        "",
-        "План:",
-        action_line,
-        f"Стоп / invalidation: {fmt_price(analysis['stop'])}",
-        f"TP1: {fmt_price(analysis['tp1'])}",
-        f"TP2: {fmt_price(analysis['tp2'])}",
-        sell_line,
-        "",
-        "Какво ще обърне сигнала:",
-        f"• Ако цената мине под {fmt_price(analysis['stop'])} при BUY/HOLD, сигналът отслабва сериозно.",
-        f"• Ако RSI продължи рязко нагоре над 72 без нов обем, рискът от охлаждане се вдига.",
-        f"• Ако новините рязко се обърнат негативно, ботът ще смъкне уверeността дори цената още да държи.",
-        "",
-        "Най-важните новини сега:",
-        *headline_lines,
-    ]
-    if strongest:
-        lines.extend([
-            "",
-            f"Най-силният news trigger: {strongest['title']} — {strongest['source']}",
-        ])
-    return "\n".join(lines)
-
-
-def build_move_alert(analysis: Dict, label: str, move_pct: float, baseline: float) -> str:
-    symbol = analysis["snapshot"]["symbol"]
-    emoji = "🚀" if move_pct > 0 else "🔻"
-    return (
-        f"{emoji} {symbol} {label} {fmt_pct(move_pct)}\n"
-        f"Now {fmt_price(analysis['price'])} | then {fmt_price(baseline)}\n"
-        f"Signal {analysis['action']} {analysis['confidence']:.0f}%"
-    )
-
-
-def build_signal_alert(analysis: Dict) -> str:
-    symbol = analysis["snapshot"]["symbol"]
-    emoji = "🚨" if "BUY" in analysis["action"] else "⚠️"
-    return (
-        f"{emoji} {symbol} {analysis['action']} {analysis['confidence']:.0f}%\n"
-        f"Price {fmt_price(analysis['price'])}\n"
-        f"{analysis['short_plan']}\n"
-        f"SL {fmt_price(analysis['stop'])} | TP {fmt_price(analysis['tp1'])} / {fmt_price(analysis['tp2'])}\n"
-        f"Why: {analysis['why']}"
-    )
-
-
-def build_news_watch_alert(analysis: Dict, headline: Dict) -> str:
-    symbol = analysis["snapshot"]["symbol"]
-    emoji = "📰🚀" if headline["weighted_score"] > 0 else "📰⚠️"
-    return (
-        f"{emoji} {symbol} news\n"
-        f"{headline['title']}\n"
-        f"{analysis['action']} {analysis['confidence']:.0f}% | {fmt_price(analysis['price'])}"
-    )
-
-
-def should_send_signal_alert(config: Config, state: Dict, analysis: Dict) -> bool:
-    coin_id = analysis["snapshot"]["coin_id"]
-    prev = state.get("last_recommendations", {}).get(coin_id, {})
-    prev_action = prev.get("action")
-    prev_conf = float(prev.get("confidence", 0))
-    current_action = analysis["action"]
-    current_conf = analysis["confidence"]
-
-    if current_action in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"} and current_conf >= config.signal_alert_confidence:
+    signal_state = state.setdefault("signals", {}).get(symbol, {})
+    last_summary = signal_state.get("last_summary_at")
+    last_signal = signal_state.get("signal")
+    last_conf = signal_state.get("confidence")
+    if not last_summary:
         return True
-
-    if current_action != prev_action and current_action in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"} and current_conf >= config.signal_flip_min_confidence:
+    if last_signal != signal["signal"]:
         return True
-
-    if abs(current_conf - prev_conf) >= 12 and current_action in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"} and current_conf >= config.signal_flip_min_confidence:
+    if last_conf is None or abs(signal["confidence"] - int(last_conf)) >= 8:
         return True
-
-    return False
-
-
-def maybe_send_move_alerts(config: Config, state: Dict, analysis: Dict, chart: Dict, now: datetime) -> int:
-    alerts_sent = 0
-    last_alerts = state.setdefault("last_alerts", {})
-    prices = chart["prices"]
-    current = analysis["price"]
-    symbol = analysis["snapshot"]["symbol"]
-    thresholds = ASSETS[analysis["snapshot"]["coin_id"]]["thresholds"]
-
-    for minutes_back, key in [(5, "5m"), (15, "15m"), (60, "60m")]:
-        baseline = find_price_at_or_before(prices, now - timedelta(minutes=minutes_back))
-        if not baseline:
-            continue
-        move = pct_change(current, baseline)
-        if abs(move) < thresholds[key]:
-            continue
-        alert_key = f"{symbol}:{key}:{'up' if move > 0 else 'down'}"
-        if not can_send(last_alerts, alert_key, now, config.cooldown_minutes):
-            continue
-        send_telegram_message(config, build_move_alert(analysis, key, move, baseline))
-        record_alert(last_alerts, alert_key, now)
-        alerts_sent += 1
-
-    if abs(analysis["change_24h"]) >= thresholds["24h"]:
-        key = f"{symbol}:24h:{'up' if analysis['change_24h'] > 0 else 'down'}"
-        if can_send(last_alerts, key, now, config.cooldown_minutes * 4):
-            send_telegram_message(config, build_move_alert(analysis, "24h", analysis["change_24h"], current / (1 + analysis["change_24h"] / 100)))
-            record_alert(last_alerts, key, now)
-            alerts_sent += 1
-
-    return alerts_sent
+    return now - iso_to_dt(last_summary) >= timedelta(hours=config.summary_interval_hours)
 
 
-def maybe_send_signal_alert(config: Config, state: Dict, analysis: Dict, now: datetime) -> int:
-    if not should_send_signal_alert(config, state, analysis):
-        return 0
-    key = f"{analysis['snapshot']['symbol']}:signal:{analysis['action']}"
-    last_alerts = state.setdefault("last_alerts", {})
-    if not can_send(last_alerts, key, now, config.cooldown_minutes):
-        return 0
-    send_telegram_message(config, build_signal_alert(analysis))
-    record_alert(last_alerts, key, now)
-    return 1
+def can_send_alert(state: Dict, key: str, now: datetime, config: Config) -> bool:
+    last_sent = state.setdefault("last_alerts", {}).get(key)
+    if not last_sent:
+        return True
+    return now - iso_to_dt(last_sent) >= timedelta(minutes=config.cooldown_minutes)
 
 
-def maybe_send_news_watch(config: Config, state: Dict, analysis: Dict, now: datetime) -> int:
-    if not config.enable_news:
-        return 0
-    headline = analysis["news"].get("strongest")
-    if not headline:
-        return 0
-    if abs(headline["weighted_score"]) < config.news_impact_alert_score:
-        return 0
-    if analysis["confidence"] < config.news_watch_confidence:
-        return 0
-    seen = state.setdefault("seen_headlines", {})
-    if seen.get(headline["id"]):
-        return 0
-    key = f"{analysis['snapshot']['symbol']}:news:{'up' if headline['weighted_score'] > 0 else 'down'}"
-    last_alerts = state.setdefault("last_alerts", {})
-    if not can_send(last_alerts, key, now, config.cooldown_minutes):
-        return 0
-    send_telegram_message(config, build_news_watch_alert(analysis, headline))
-    seen[headline["id"]] = dt_to_iso(now)
-    record_alert(last_alerts, key, now)
-    return 1
+def record_alert(state: Dict, key: str, now: datetime) -> None:
+    state.setdefault("last_alerts", {})[key] = dt_to_iso(now)
 
 
-def maybe_send_daily_summary(config: Config, state: Dict, analyses: List[Dict], now: datetime) -> int:
-    hour_key = now.strftime("%Y-%m-%d")
-    sent = state.setdefault("daily_summary_sent", {})
-    if now.hour != config.daily_summary_utc_hour or sent.get(hour_key):
-        return 0
+def maybe_send_urgent_alert(config: Config, state: Dict, signal: Dict, now: datetime) -> None:
+    symbol = signal["symbol"]
+    if signal["signal"] in {"BUY", "SELL"} and signal["confidence"] >= config.strong_confidence:
+        key = f"urgent_{symbol}_{signal['signal']}"
+        if can_send_alert(state, key, now, config):
+            text = "\n".join([
+                f"{symbol} urgent {signal['signal']}",
+                f"Confidence: {signal['confidence']}%",
+                f"Price: {format_price(signal['current_price'])}",
+                f"Window: {signal['hold_window']}",
+                f"Stop: {format_price(signal['stop'])}",
+                f"TP1 / TP2: {format_price(signal['tp1'])} / {format_price(signal['tp2'])}",
+            ])
+            send_telegram_message(config, text)
+            record_alert(state, key, now)
 
-    actionable = [a for a in analyses if a["action"] != "HOLD" and a["confidence"] >= 65]
-    if not actionable:
-        sent[hour_key] = dt_to_iso(now)
-        return 0
+    if signal["change_60m"] <= -2.0:
+        key = f"dump_{symbol}"
+        if can_send_alert(state, key, now, config):
+            text = f"{symbol} sharp drop\n1h: {format_pct(signal['change_60m'])}\nPrice: {format_price(signal['current_price'])}"
+            send_telegram_message(config, text)
+            record_alert(state, key, now)
 
-    lines = ["📌 Daily"]
-    for a in actionable[:2]:
-        lines.append(f"{a['snapshot']['symbol']} {a['action']} {a['confidence']:.0f}% | {fmt_price(a['price'])}")
-    send_telegram_message(config, "\n".join(lines))
-    sent[hour_key] = dt_to_iso(now)
-    return 1
+    if signal["change_60m"] >= 2.0:
+        key = f"pump_{symbol}"
+        if can_send_alert(state, key, now, config):
+            text = f"{symbol} strong pump\n1h: {format_pct(signal['change_60m'])}\nPrice: {format_price(signal['current_price'])}"
+            send_telegram_message(config, text)
+            record_alert(state, key, now)
 
 
 def main() -> None:
     config = load_config()
-    now = utc_now()
     state = load_state()
+    now = utc_now()
+    simple = fetch_simple_prices(config)
+    outputs = []
 
-    snapshots = get_market_snapshot(config)
-    charts = {coin_id: get_market_chart(config, coin_id) for coin_id in ASSETS}
-    news_by_asset = {coin_id: get_asset_news(coin_id) if config.enable_news else {"sentiment": 0.0, "strongest": None, "headlines": []} for coin_id in ASSETS}
+    for coin_id, symbol in COINS.items():
+        info = simple.get(coin_id, {})
+        current_price = float(info.get("usd") or 0.0)
+        change_24h = float(info.get("usd_24h_change") or 0.0)
+        if current_price <= 0:
+            raise BotError(f"Bad price data for {coin_id}: {info}")
+        points = fetch_market_chart(config, coin_id)
+        signal = build_signal(coin_id, symbol, current_price, change_24h, points)
 
-    analyses = [
-        compute_analysis(snapshots[coin_id], charts[coin_id], news_by_asset[coin_id])
-        for coin_id in ASSETS
-    ]
+        if should_send_summary(state, symbol, now, config, signal):
+            send_telegram_message(config, build_prediction_message(signal))
+            state.setdefault("signals", {}).setdefault(symbol, {})["last_summary_at"] = dt_to_iso(now)
 
-    analyses.sort(key=lambda a: (a["snapshot"]["symbol"] != "BTC", a["snapshot"]["symbol"]))
-
-    if config.trigger_event == "workflow_dispatch":
-        for analysis in analyses:
-            send_telegram_message(config, build_detailed_analysis(analysis))
-            coin_id = analysis["snapshot"]["coin_id"]
-            state.setdefault("last_recommendations", {})[coin_id] = {
-                "action": analysis["action"],
-                "confidence": analysis["confidence"],
-                "score": analysis["score"],
-                "updated_at": dt_to_iso(now),
-            }
-        state["last_run"] = dt_to_iso(now)
-        state["last_alert_count"] = 2
-        save_state(state)
-        print(json.dumps({
+        state.setdefault("signals", {}).setdefault(symbol, {}).update({
+            "signal": signal["signal"],
+            "confidence": signal["confidence"],
+            "last_price": signal["current_price"],
             "updated_at": dt_to_iso(now),
-            "alerts_sent": 2,
-            "assets": [
-                {"symbol": a["snapshot"]["symbol"], "action": a["action"], "confidence": a["confidence"], "price": a["price"]}
-                for a in analyses
-            ],
-        }, indent=2))
-        return
+        })
+        maybe_send_urgent_alert(config, state, signal, now)
+        outputs.append({
+            "symbol": symbol,
+            "signal": signal["signal"],
+            "confidence": signal["confidence"],
+            "price": signal["current_price"],
+        })
 
-    alerts_sent = 0
-    for analysis in analyses:
-        coin_id = analysis["snapshot"]["coin_id"]
-        alerts_sent += maybe_send_move_alerts(config, state, analysis, charts[coin_id], now)
-        alerts_sent += maybe_send_signal_alert(config, state, analysis, now)
-        alerts_sent += maybe_send_news_watch(config, state, analysis, now)
-        state.setdefault("last_recommendations", {})[coin_id] = {
-            "action": analysis["action"],
-            "confidence": analysis["confidence"],
-            "score": analysis["score"],
-            "updated_at": dt_to_iso(now),
-        }
-
-    alerts_sent += maybe_send_daily_summary(config, state, analyses, now)
-    state["last_run"] = dt_to_iso(now)
-    state["last_alert_count"] = alerts_sent
     save_state(state)
-
-    print(json.dumps({
-        "updated_at": dt_to_iso(now),
-        "alerts_sent": alerts_sent,
-        "assets": [
-            {"symbol": a["snapshot"]["symbol"], "action": a["action"], "confidence": a["confidence"], "price": a["price"]}
-            for a in analyses
-        ],
-    }, indent=2))
+    print(json.dumps(outputs, indent=2))
 
 
 if __name__ == "__main__":
