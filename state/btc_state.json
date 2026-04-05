@@ -69,18 +69,18 @@
   },
   "signals": {
     "BTC": {
-      "last_summary_at": "2026-04-05T03:32:08.043866+00:00",
+      "last_summary_at": "2026-04-05T07:44:14.179704+00:00",
       "signal": "HOLD",
       "confidence": 52,
-      "last_price": 66814.0,
-      "updated_at": "2026-04-05T06:45:50.618669+00:00"
+      "last_price": 66750.0,
+      "updated_at": "2026-04-05T07:44:14.179704+00:00"
     },
     "ETH": {
       "last_summary_at": "2026-04-05T05:28:13.734759+00:00",
       "signal": "HOLD",
-      "confidence": 58,
-      "last_price": 2038.82,
-      "updated_at": "2026-04-05T06:45:50.618669+00:00"
+      "confidence": 55,
+      "last_price": 2035.78,
+      "updated_at": "2026-04-05T07:44:14.179704+00:00"
     }
   }
 }
