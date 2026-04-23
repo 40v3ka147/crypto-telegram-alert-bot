@@ -72,15 +72,15 @@
       "last_summary_at": "2026-04-23T19:57:55.136441+00:00",
       "signal": "HOLD",
       "confidence": 52,
-      "last_price": 78290.0,
-      "updated_at": "2026-04-23T22:57:42.086969+00:00"
+      "last_price": 78273.0,
+      "updated_at": "2026-04-23T23:55:37.311213+00:00"
     },
     "ETH": {
       "last_summary_at": "2026-04-23T22:57:42.086969+00:00",
       "signal": "HOLD",
-      "confidence": 55,
-      "last_price": 2335.05,
-      "updated_at": "2026-04-23T22:57:42.086969+00:00"
+      "confidence": 52,
+      "last_price": 2331.81,
+      "updated_at": "2026-04-23T23:55:37.311213+00:00"
     }
   }
 }
